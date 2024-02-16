@@ -45,6 +45,36 @@ inline void check_kernel_err() {
   }
 }
 
+void print_cube(float ***cube, int n) {
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < n; j++) {
+      for (int k = 0; k < n; k++) {
+        printf("%lf, ", cube[i][j][k]);
+      }
+      printf("\n");
+    }
+    printf("\n");
+  }
+}
+
+void gen_cube(float ****cube_ref, int n) {
+  (*cube_ref) = (float ***)malloc(n * sizeof(float **));
+  for (int i = 0; i < n; i++) {
+    (*cube_ref)[i] = (float **)malloc(n * sizeof(float *));
+    for (int j = 0; j < n; j++) {
+      (*cube_ref)[i][j] = (float *)malloc(n * sizeof(float));
+    }
+  }
+
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < n; j++) {
+      for (int k = 0; k < n; k++) {
+        (*cube_ref)[i][j][k] = (float)((i + j + k) % 10) * (float)1.1;
+      }
+    }
+  }
+}
+
 int main(int argc, char *argv[]) {
   std::string n_str;
   int n;
@@ -67,6 +97,10 @@ int main(int argc, char *argv[]) {
   }
 
   printf("specified n:%d\n", n);
+
+  float ***input;
+  gen_cube(&input, n);
+  print_cube(input, n);
 
   return 0;
 }
