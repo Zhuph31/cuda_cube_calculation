@@ -95,13 +95,13 @@ void cpu_calculation(float ***input, float ***output, int n) {
   }
 }
 
-float sum(float ***output, int n) {
-  float sum = 0;
+double sum_cube(float ***output, int n) {
+  double sum = 0;
 
   for (int i = 0; i < n; i++) {
     for (int j = 0; j < n; j++) {
       for (int k = 0; k < n; k++) {
-        sum += output[i][j][k] * (((i + j + k) % 10) ? 1 : -1);
+        sum += (double)output[i][j][k] * (((i + j + k) % 10) ? 1 : -1);
       }
     }
   }
@@ -138,7 +138,7 @@ int main(int argc, char *argv[]) {
   gen_cube(input, n);
   cpu_calculation(input, output, n);
 
-  float cpu_cal_sum = sum(output, n);
+  double cpu_cal_sum = sum_cube(output, n);
   printf("cpu result sum:%lf\n", cpu_cal_sum);
 
   return 0;
