@@ -78,10 +78,9 @@ void gen_cube(float ***cube, int n) {
 }
 
 void cpu_calculation(float ***input, float ***output, int n) {
-  for (int i = 0; i < n; i++)
-    for (int j = 0; j < n; j++)
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < n; j++) {
       for (int k = 0; k < n; k++) {
-
         float elem1 = i > 0 ? input[i - 1][j][k] : 0;
         float elem2 = i < n - 1 ? input[i + 1][j][k] : 0;
         float elem3 = j > 0 ? input[i][j - 1][k] : 0;
@@ -92,6 +91,22 @@ void cpu_calculation(float ***input, float ***output, int n) {
         output[i][j][k] =
             (float)0.8 * (elem1 + elem2 + elem3 + elem4 + elem5 + elem6);
       }
+    }
+  }
+}
+
+float sum(float ***output, int n) {
+  float sum = 0;
+
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < n; j++) {
+      for (int k = 0; k < n; k++) {
+        sum += output[i][j][k] * (((i + j + k) % 10) ? 1 : -1);
+      }
+    }
+  }
+
+  return sum;
 }
 
 int main(int argc, char *argv[]) {
@@ -121,9 +136,10 @@ int main(int argc, char *argv[]) {
   cpu_malloc_cube(&input, n);
   cpu_malloc_cube(&output, n);
   gen_cube(input, n);
-  // print_cube(input, n);
   cpu_calculation(input, output, n);
-  // print_cube(output, n);
+
+  float cpu_cal_sum = sum(output, n);
+  printf("cpu result sum:%lf\n", cpu_cal_sum);
 
   return 0;
 }
