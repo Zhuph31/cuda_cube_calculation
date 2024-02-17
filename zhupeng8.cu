@@ -57,7 +57,7 @@ void print_cube(float ***cube, int n) {
   }
 }
 
-void gen_cube(float ****cube_ref, int n) {
+void cpu_malloc_cube(float ****cube_ref, int n) {
   (*cube_ref) = (float ***)malloc(n * sizeof(float **));
   for (int i = 0; i < n; i++) {
     (*cube_ref)[i] = (float **)malloc(n * sizeof(float *));
@@ -65,14 +65,33 @@ void gen_cube(float ****cube_ref, int n) {
       (*cube_ref)[i][j] = (float *)malloc(n * sizeof(float));
     }
   }
+}
 
+void gen_cube(float ***cube, int n) {
   for (int i = 0; i < n; i++) {
     for (int j = 0; j < n; j++) {
       for (int k = 0; k < n; k++) {
-        (*cube_ref)[i][j][k] = (float)((i + j + k) % 10) * (float)1.1;
+        cube[i][j][k] = (float)((i + j + k) % 10) * (float)1.1;
       }
     }
   }
+}
+
+void cpu_calculation(float ***input, float ***output, int n) {
+  for (int i = 0; i < n; i++)
+    for (int j = 0; j < n; j++)
+      for (int k = 0; k < n; k++) {
+
+        float elem1 = i > 0 ? input[i - 1][j][k] : 0;
+        float elem2 = i < n - 1 ? input[i + 1][j][k] : 0;
+        float elem3 = j > 0 ? input[i][j - 1][k] : 0;
+        float elem4 = j < n - 1 ? input[i][j + 1][k] : 0;
+        float elem5 = k > 0 ? input[i][j][k - 1] : 0;
+        float elem6 = k < n - 1 ? input[i][j][k + 1] : 0;
+
+        output[i][j][k] =
+            (float)0.8 * (elem1 + elem2 + elem3 + elem4 + elem5 + elem6);
+      }
 }
 
 int main(int argc, char *argv[]) {
@@ -96,11 +115,15 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  printf("specified n:%d\n", n);
+  // printf("specified n:%d\n", n);
 
-  float ***input;
-  gen_cube(&input, n);
-  print_cube(input, n);
+  float ***input, ***output;
+  cpu_malloc_cube(&input, n);
+  cpu_malloc_cube(&output, n);
+  gen_cube(input, n);
+  // print_cube(input, n);
+  cpu_calculation(input, output, n);
+  // print_cube(output, n);
 
   return 0;
 }
