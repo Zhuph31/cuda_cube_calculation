@@ -2,6 +2,7 @@
 #include <iostream>
 #include <stdarg.h>
 #include <sys/time.h>
+#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
@@ -148,13 +149,31 @@ double sum_cube(float ***output, uint64_t n) {
 }
 
 void verify_result(float *h_output, float *d_output, uint64_t n) {
-  for (uint64_t i = 0; i < n * n * n; ++i) {
-    if (h_output[i] != d_output[i]) {
-      printf("idx:%lu, %lf vs %lf\n", i, h_output[i], d_output[i]);
-      exit(1);
-    }
+  uint64_t elements = n * n * n;
+  int thread_num = elements / 10000;
+  thread_num = thread_num == 0 ? 1 : thread_num;
+  thread_num = thread_num > 10 ? 10 : thread_num;
+  uint64_t elem_per_thread = (elements + thread_num - 1) / thread_num;
+  // printf("using %d threads, elem per thread:%lu", thread_num,
+  // elem_per_thread);
+
+  std::vector<std::thread> threads;
+
+  for (int i = 0; i < thread_num; ++i) {
+    threads.emplace_back(std::thread([h_output, d_output, n, thread_id = i,
+                                      elem_per_thread, elements]() {
+      for (uint64_t pos = thread_id * elem_per_thread; pos < elements; ++pos) {
+        if (h_output[pos] != d_output[pos]) {
+          printf("idx:%lu, %lf vs %lf\n", pos, h_output[pos], d_output[pos]);
+          exit(1);
+        }
+      }
+    }));
   }
 
+  for (int i = 0; i < thread_num; ++i) {
+    threads[i].join();
+  }
   printf("verified, equal\n");
 }
 
@@ -173,7 +192,18 @@ void debug_device_array(float *d_array, int elements) {
   debug_host_array(test, elements);
 }
 
-float *gpu_calculation(float ***input, uint64_t n) {
+struct ExecRecord {
+  double host_to_device_copy;
+  double device_to_host_copy;
+  double kernel_time;
+  double total_time;
+  void print() const {
+    printf("%lf, %lf, %lf, %lf\n", total_time, host_to_device_copy, kernel_time,
+           device_to_host_copy);
+  }
+};
+
+float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
   uint64_t elements = n * n * n;
 
   float *output;
@@ -186,29 +216,42 @@ float *gpu_calculation(float ***input, uint64_t n) {
   flatten_cube(input, pinned_flat_cube, n);
 
   {
-    TimeCost tc;
+    TimeCost total_tc;
     float *d_input, *d_output;
     cudaMalloc((void **)&d_input, elements * sizeof(float));
     cudaMalloc((void **)&d_output, elements * sizeof(float));
 
+    TimeCost host_to_device_copy_tc;
     cudaMemcpy(d_input, pinned_flat_cube, elements * sizeof(float),
                cudaMemcpyHostToDevice);
+    record.host_to_device_copy = host_to_device_copy_tc.get_elapsed();
 
     uint64_t grid_dim = (elements + block_dim - 1) / block_dim;
-    printf("grid_dim:%lu, block_dim:%lu\n", grid_dim, block_dim);
-    basic<<<grid_dim, block_dim>>>(d_input, d_output, n);
-    check_kernel_err();
+    // printf("grid_dim:%lu, block_dim:%lu\n", grid_dim, block_dim);
 
+    TimeCost kernel_tc;
+    basic<<<grid_dim, block_dim>>>(d_input, d_output, n);
+
+    cudaDeviceSynchronize();
+    check_kernel_err();
+    record.kernel_time = kernel_tc.get_elapsed();
+
+    TimeCost device_to_host_copy_tc;
     cudaMemcpy(output, d_output, elements * sizeof(float),
                cudaMemcpyDeviceToHost);
-    printf("basic solution cost:%d\n", int(std::ceil(tc.get_elapsed())));
+    record.device_to_host_copy = device_to_host_copy_tc.get_elapsed();
+
+    cudaDeviceSynchronize();
+    record.total_time = total_tc.get_elapsed();
   }
 
   return output;
 }
 
 void gpu_cal_compare(float ***input, float ***cpu_output, uint64_t n) {
-  float *gpu_output = gpu_calculation(input, n);
+  ExecRecord record;
+  float *gpu_output = gpu_calculation(input, n, record);
+  record.print();
 
   float *flat_cpu_output = (float *)malloc(n * n * n * sizeof(float));
   flatten_cube(cpu_output, flat_cpu_output, n);
@@ -242,7 +285,9 @@ int main(int argc, char *argv[]) {
   cpu_malloc_cube(&input, n);
   cpu_malloc_cube(&output, n);
   gen_cube(input, n);
+  TimeCost cpu_tc;
   cpu_calculation(input, output, n);
+  printf("cpu cost:%lf\n", cpu_tc.get_elapsed());
   double cpu_cal_sum = sum_cube(output, n);
   printf("cpu result sum:%lf\n", cpu_cal_sum);
 
