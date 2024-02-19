@@ -11,7 +11,7 @@
 #define FLAT_INDEX(array, i, j, k, n) (array[(i) * (n) * (n) + (j) * (n) + (k)])
 
 uint64_t block_dim = 1024;
-uint64_t n_stream = 5;
+uint64_t n_stream = 10;
 
 #define gpu_err_check(ans) gpu_err_check_impl((ans), __FILE__, __LINE__)
 inline void gpu_err_check_impl(cudaError_t code, const char *file, int line,
@@ -389,7 +389,8 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
 
     // wait for the copy on the next stream to finish first
     if (i < n_stream && stream_elems[i + 1] > 0) {
-      cudaStreamWaitEvent(streams[i], h_to_d_copy_end[i + 1]);
+      // cudaStreamWaitEvent(streams[i], h_to_d_copy_end[i + 1]);
+      cudaStreamSynchronize(streams[i + 1]);
     }
 
     uint64_t grid_dim = (stream_elems[i] + block_dim - 1) / block_dim;
@@ -407,7 +408,8 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
     }
 
     // wait for the kernel on the current stream to finish first
-    cudaStreamWaitEvent(streams[i], kernel_end[i]);
+    // cudaStreamWaitEvent(streams[i], kernel_end[i]);
+    cudaStreamSynchronize(streams[i]);
 
     gpu_err_check(cudaEventRecord(d_to_h_copy_start[i], streams[i]));
     gpu_err_check(cudaMemcpyAsync(&(pinned_output[stream_elem_offset[i]]),
