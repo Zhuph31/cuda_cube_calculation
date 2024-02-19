@@ -10,7 +10,20 @@
 #define FLAT_INDEX(array, i, j, k, n) (array[(i) * (n) * (n) + (j) * (n) + (k)])
 
 uint64_t block_dim = 1024;
-uint64_t n_stream = 30;
+uint64_t n_stream = 5;
+
+#define gpu_err_check(ans) gpu_err_check_impl((ans), __FILE__, __LINE__)
+inline void gpu_err_check_impl(cudaError_t code, const char *file, int line,
+                               bool abort = true) {
+  if (code != cudaSuccess) {
+    fprintf(stderr, "CUDA Error: %s %s:%d\n", cudaGetErrorString(code), file,
+            line);
+    if (abort) {
+      fflush(stderr);
+      exit(code);
+    }
+  }
+}
 
 void debug_printf(const char *format, ...) {
   va_list args;
@@ -134,6 +147,41 @@ __global__ void basic(const float *input, float *output, unsigned int n) {
   return;
 }
 
+__global__ void basic_streaming(const float *input, float *output,
+                                unsigned int n, int stream_id,
+                                uint64_t stream_elems, uint64_t stream_offset) {
+  int block_id = blockIdx.x;
+  int thread_id = threadIdx.x;
+  int block_offset = block_id * blockDim.x;
+
+  uint64_t global_thread_id = stream_offset + block_offset + thread_id;
+
+  uint64_t i = global_thread_id / (n * n), j = global_thread_id % (n * n) / n,
+           k = global_thread_id % (n * n) % n;
+
+  if (i >= n || j >= n || k >= n) {
+    return;
+  }
+
+  float elem1 = i > 0 ? FLAT_INDEX(input, i - 1, j, k, n) : 0;
+  float elem2 = i < n - 1 ? FLAT_INDEX(input, i + 1, j, k, n) : 0;
+  float elem3 = j > 0 ? FLAT_INDEX(input, i, j - 1, k, n) : 0;
+  float elem4 = j < n - 1 ? FLAT_INDEX(input, i, j + 1, k, n) : 0;
+  float elem5 = k > 0 ? FLAT_INDEX(input, i, j, k - 1, n) : 0;
+  float elem6 = k < n - 1 ? FLAT_INDEX(input, i, j, k + 1, n) : 0;
+
+  FLAT_INDEX(output, i, j, k, n) =
+      (float)0.8 * (elem1 + elem2 + elem3 + elem4 + elem5 + elem6);
+
+  // printf("global thread id:%lu, %lu,%lu,%lu, pos_elem:%lf, "
+  //        "elems:%lf,%lf,%lf,%lf,%lf,%lf"
+  //        ", res:%lf\n",
+  //        global_thread_id, i, j, k, FLAT_INDEX(input, i, j, k, n), elem1,
+  //        elem2, elem3, elem4, elem5, elem6, FLAT_INDEX(output, i, j, k, n));
+
+  return;
+}
+
 double sum_cube(float ***output, uint64_t n) {
   double sum = 0;
 
@@ -164,6 +212,7 @@ void verify_result(float *h_output, float *d_output, uint64_t n) {
                                       elem_per_thread, elements]() {
       for (uint64_t pos = thread_id * elem_per_thread; pos < elements; ++pos) {
         if (h_output[pos] != d_output[pos]) {
+          printf("unequal\n");
           printf("idx:%lu, %lf vs %lf\n", pos, h_output[pos], d_output[pos]);
           exit(1);
         }
@@ -211,10 +260,10 @@ float *basic_gpu(float ***input, uint64_t n, ExecRecord &record) {
   cudaMallocHost((void **)&output, elements * sizeof(float),
                  cudaHostAllocWriteCombined);
 
-  float *pinned_flat_cube;
-  cudaMallocHost((void **)&pinned_flat_cube, elements * sizeof(float),
+  float *pinned_flat_input;
+  cudaMallocHost((void **)&pinned_flat_input, elements * sizeof(float),
                  cudaHostAllocWriteCombined);
-  flatten_cube(input, pinned_flat_cube, n);
+  flatten_cube(input, pinned_flat_input, n);
 
   {
     TimeCost total_tc;
@@ -223,7 +272,7 @@ float *basic_gpu(float ***input, uint64_t n, ExecRecord &record) {
     cudaMalloc((void **)&d_output, elements * sizeof(float));
 
     TimeCost host_to_device_copy_tc;
-    cudaMemcpy(d_input, pinned_flat_cube, elements * sizeof(float),
+    cudaMemcpy(d_input, pinned_flat_input, elements * sizeof(float),
                cudaMemcpyHostToDevice);
     record.host_to_device_copy = host_to_device_copy_tc.get_elapsed();
 
@@ -253,14 +302,14 @@ float *basic_gpu(float ***input, uint64_t n, ExecRecord &record) {
 float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
   uint64_t elements = n * n * n;
 
-  float *output;
-  cudaMallocHost((void **)&output, elements * sizeof(float),
+  float *pinned_output;
+  cudaMallocHost((void **)&pinned_output, elements * sizeof(float),
                  cudaHostAllocWriteCombined);
 
-  float *pinned_flat_cube;
-  cudaMallocHost((void **)&pinned_flat_cube, elements * sizeof(float),
+  float *pinned_flat_input;
+  cudaMallocHost((void **)&pinned_flat_input, elements * sizeof(float),
                  cudaHostAllocWriteCombined);
-  flatten_cube(input, pinned_flat_cube, n);
+  flatten_cube(input, pinned_flat_input, n);
 
   cudaStream_t streams[n_stream + 1];
 
@@ -268,6 +317,7 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
       d_to_h_copy_start[n_stream + 1], d_to_h_copy_end[n_stream + 1],
       kernel_start[n_stream + 1], kernel_end[n_stream + 1];
 
+  // create streams and events
   for (int i = 1; i <= n_stream; ++i) {
     cudaStreamCreate(&streams[i]);
     cudaEventCreate(&h_to_d_copy_start[i]);
@@ -278,12 +328,14 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
     cudaEventCreate(&kernel_end[i]);
   }
 
-  std::vector<uint64_t> stream_elems(n_stream + 1), stream_elem_offset,
-      stream_bytes(n_stream + 1), stream_byte_offset(n_stream + 1);
+  // printf("events created\n");
 
+  // calculate each stream's elements and offset
+  std::vector<uint64_t> stream_elems(n_stream + 1),
+      stream_elem_offset(n_stream + 1), stream_bytes(n_stream + 1),
+      stream_byte_offset(n_stream + 1);
   uint64_t elem_per_stream = (elements + n_stream - 1) / n_stream,
            last_stream_elem = elements - (n_stream - 1) * elem_per_stream;
-
   for (size_t i = 1; i <= n_stream; ++i) {
     stream_elem_offset[i] = elem_per_stream * (i - 1);
     stream_elems[i] =
@@ -292,32 +344,103 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
     stream_bytes[i] = stream_elems[i] * sizeof(float);
   }
 
+  // debug stream stats
+  // for (size_t i = 1; i <= n_stream; ++i) {
+  //   printf("stream:%lu, %lu,%lu,%lu,%lu\n", i, stream_elem_offset[i],
+  //          stream_elems[i], stream_byte_offset[i], stream_bytes[i]);
+  // }
+
+  // printf("stats calculated\n");
+
   TimeCost total_tc;
   float *d_input, *d_output;
   cudaMalloc((void **)&d_input, elements * sizeof(float));
   cudaMalloc((void **)&d_output, elements * sizeof(float));
 
+  // start all copy event
   for (int i = 1; i <= n_stream; ++i) {
-    cudaMemcpy(d_input, pinned_flat_cube, elements * sizeof(float),
-               cudaMemcpyHostToDevice);
-
-    uint64_t grid_dim = (elements + block_dim - 1) / block_dim;
-
-    basic<<<grid_dim, block_dim>>>(d_input, d_output, n);
-    cudaDeviceSynchronize();
-    check_kernel_err();
-
-    cudaMemcpy(output, d_output, elements * sizeof(float),
-               cudaMemcpyDeviceToHost);
-
-    cudaDeviceSynchronize();
+    if (stream_elems[i] <= 0) {
+      break;
+    }
+    gpu_err_check(cudaEventRecord(h_to_d_copy_start[i], streams[i]));
+    gpu_err_check(cudaMemcpyAsync(&(d_input[stream_elem_offset[i]]),
+                                  &(pinned_flat_input[stream_elem_offset[i]]),
+                                  stream_bytes[i], cudaMemcpyHostToDevice,
+                                  streams[i]));
+    gpu_err_check(cudaEventRecord(h_to_d_copy_end[i], streams[i]));
   }
+
+  cudaDeviceSynchronize();
+
+  record.host_to_device_copy = 0;
+  for (int i = 1; i <= n_stream; ++i) {
+    if (stream_elems[i] <= 0) {
+      break;
+    }
+    float ms = 0;
+    cudaEventElapsedTime(&ms, h_to_d_copy_start[i], h_to_d_copy_end[i]);
+    printf("stream:%d, htod copy time:%f\n", i, ms);
+    record.host_to_device_copy += ms / 1000;
+  }
+
+  for (int i = 1; i <= n_stream; ++i) {
+    if (stream_elems[i] <= 0) {
+      break;
+    }
+
+    uint64_t grid_dim = (stream_elems[i] + block_dim - 1) / block_dim;
+    basic_streaming<<<grid_dim, block_dim, 0, streams[i]>>>(
+        d_input, d_output, n, i, stream_elems[i], stream_elem_offset[i]);
+  }
+
+  // start all copy back event
+  for (int i = 1; i <= n_stream; ++i) {
+    if (stream_elems[i] <= 0) {
+      break;
+    }
+    gpu_err_check(cudaEventRecord(d_to_h_copy_start[i], streams[i]));
+    gpu_err_check(cudaMemcpyAsync(&(pinned_output[stream_elem_offset[i]]),
+                                  &(d_output[stream_elem_offset[i]]),
+                                  stream_bytes[i], cudaMemcpyDeviceToHost,
+                                  streams[i]));
+    gpu_err_check(cudaEventRecord(d_to_h_copy_end[i], streams[i]));
+  }
+
+  cudaDeviceSynchronize();
+
+  // update record
+  record.kernel_time = 0;
+  record.device_to_host_copy = 0;
+
+  for (int i = 1; i <= n_stream; ++i) {
+    if (stream_elems[i] <= 0) {
+      break;
+    }
+    float ms = 0;
+    // cudaEventElapsedTime(&ms, h_to_d_copy_start[i], h_to_d_copy_end[i]);
+    // printf("stream:%d, htod copy time:%f\n", i, ms);
+    // record.host_to_device_copy += ms / 1000;
+    ms = 0;
+    // cudaEventElapsedTime(&ms, kernel_start[i], kernel_end[i]);
+    // record.kernel_time += ms / 1000;
+    cudaEventElapsedTime(&ms, d_to_h_copy_start[i], d_to_h_copy_end[i]);
+    printf("stream:%d, dtoh copy time:%f\n", i, ms);
+    record.host_to_device_copy += ms / 1000;
+    record.device_to_host_copy += ms / 1000;
+  }
+
   record.total_time = total_tc.get_elapsed();
 
-  return output;
+  return pinned_output;
 }
 
 void gpu_cal_compare(float ***input, float ***cpu_output, uint64_t n) {
+  {
+    ExecRecord record;
+    basic_gpu(input, n, record);
+    record.print();
+  }
+
   ExecRecord record;
   float *gpu_output = gpu_calculation(input, n, record);
   record.print();
