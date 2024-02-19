@@ -37,7 +37,7 @@ class TimeCost {
   double get_timestamp() const {
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    return (double)tv.tv_usec / 1000000 + tv.tv_sec;
+    return (double)tv.tv_usec / 1000 + tv.tv_sec * 1000;
   }
 
   double start_ts;
@@ -368,6 +368,7 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
   gpu_err_check(cudaMalloc((void **)&d_input, elements * sizeof(float)));
   gpu_err_check(cudaMalloc((void **)&d_output, elements * sizeof(float)));
 
+  TimeCost debug_h_to_d_tc;
   // start all copy event
   for (int i = 1; i <= n_stream; ++i) {
     if (stream_elems[i] <= 0) {
@@ -380,8 +381,10 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
                                   streams[i]));
     gpu_err_check(cudaEventRecord(h_to_d_copy_end[i], streams[i]));
   }
+  printf("tc launching all copy to:%lf\n", debug_h_to_d_tc.get_elapsed());
 
   // start kernel
+  TimeCost debug_kernel_tc;
   for (int i = 1; i <= n_stream; ++i) {
     if (stream_elems[i] <= 0) {
       break;
@@ -400,6 +403,7 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
         d_input, d_output, n, i, stream_elems[i], stream_elem_offset[i]);
     gpu_err_check(cudaEventRecord(kernel_end[i], streams[i]));
   }
+  printf("tc launching all kernel:%lf\n", debug_kernel_tc.get_elapsed());
 
   // start all copy back event
   for (int i = 1; i <= n_stream; ++i) {
@@ -434,13 +438,12 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
     float ms = 0;
     cudaEventElapsedTime(&ms, h_to_d_copy_start[i], h_to_d_copy_end[i]);
     // printf("stream:%d, htod copy time:%f\n", i, ms);
-    record.host_to_device_copy += ms / 1000;
+    record.host_to_device_copy += ms;
     cudaEventElapsedTime(&ms, kernel_start[i], kernel_end[i]);
-    record.kernel_time += ms / 1000;
+    record.kernel_time += ms;
     cudaEventElapsedTime(&ms, d_to_h_copy_start[i], d_to_h_copy_end[i]);
     // printf("stream:%d, dtoh copy time:%f\n", i, ms);
-    record.host_to_device_copy += ms / 1000;
-    record.device_to_host_copy += ms / 1000;
+    record.device_to_host_copy += ms;
   }
 
   return pinned_output;
