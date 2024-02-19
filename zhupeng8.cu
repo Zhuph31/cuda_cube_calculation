@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdarg.h>
@@ -331,24 +332,34 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
   // printf("events created\n");
 
   // calculate each stream's elements and offset
+  // each stream take at least a layer of elements
   std::vector<uint64_t> stream_elems(n_stream + 1),
       stream_elem_offset(n_stream + 1), stream_bytes(n_stream + 1),
       stream_byte_offset(n_stream + 1);
-  uint64_t elem_per_stream = (elements + n_stream - 1) / n_stream,
-           last_stream_elem = elements - (n_stream - 1) * elem_per_stream;
+  uint64_t elem_per_stream = (elements + n_stream - 1) / n_stream;
+  uint64_t elem_per_layer = n * n;
+  elem_per_stream =
+      std::ceil(double(elem_per_stream) / double(elem_per_layer)) *
+      elem_per_layer;
+
   for (size_t i = 1; i <= n_stream; ++i) {
     stream_elem_offset[i] = elem_per_stream * (i - 1);
+    if (stream_elem_offset[i] > elements) {
+      stream_elem_offset[i] = elements;
+    }
     stream_elems[i] =
         std::min(elem_per_stream, elements - stream_elem_offset[i]);
     stream_byte_offset[i] = stream_elem_offset[i] * sizeof(float);
     stream_bytes[i] = stream_elems[i] * sizeof(float);
   }
 
+  // update last stream
+
   // debug stream stats
-  // for (size_t i = 1; i <= n_stream; ++i) {
-  //   printf("stream:%lu, %lu,%lu,%lu,%lu\n", i, stream_elem_offset[i],
-  //          stream_elems[i], stream_byte_offset[i], stream_bytes[i]);
-  // }
+  for (size_t i = 1; i <= n_stream; ++i) {
+    printf("stream:%lu, %lu,%lu,%lu,%lu\n", i, stream_elem_offset[i],
+           stream_elems[i], stream_byte_offset[i], stream_bytes[i]);
+  }
 
   // printf("stats calculated\n");
 
@@ -389,8 +400,11 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
     }
 
     uint64_t grid_dim = (stream_elems[i] + block_dim - 1) / block_dim;
+
+    gpu_err_check(cudaEventRecord(kernel_start[i], streams[i]));
     basic_streaming<<<grid_dim, block_dim, 0, streams[i]>>>(
         d_input, d_output, n, i, stream_elems[i], stream_elem_offset[i]);
+    gpu_err_check(cudaEventRecord(kernel_end[i], streams[i]));
   }
 
   // start all copy back event
@@ -417,14 +431,13 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
       break;
     }
     float ms = 0;
-    // cudaEventElapsedTime(&ms, h_to_d_copy_start[i], h_to_d_copy_end[i]);
+    cudaEventElapsedTime(&ms, h_to_d_copy_start[i], h_to_d_copy_end[i]);
     // printf("stream:%d, htod copy time:%f\n", i, ms);
-    // record.host_to_device_copy += ms / 1000;
-    ms = 0;
-    // cudaEventElapsedTime(&ms, kernel_start[i], kernel_end[i]);
-    // record.kernel_time += ms / 1000;
+    record.host_to_device_copy += ms / 1000;
+    cudaEventElapsedTime(&ms, kernel_start[i], kernel_end[i]);
+    record.kernel_time += ms / 1000;
     cudaEventElapsedTime(&ms, d_to_h_copy_start[i], d_to_h_copy_end[i]);
-    printf("stream:%d, dtoh copy time:%f\n", i, ms);
+    // printf("stream:%d, dtoh copy time:%f\n", i, ms);
     record.host_to_device_copy += ms / 1000;
     record.device_to_host_copy += ms / 1000;
   }
