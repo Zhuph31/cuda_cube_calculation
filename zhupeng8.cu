@@ -203,7 +203,8 @@ struct ExecRecord {
   }
 };
 
-float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
+// ==================== historic implementation ========================
+float *basic_gpu(float ***input, uint64_t n, ExecRecord &record) {
   uint64_t elements = n * n * n;
 
   float *output;
@@ -244,6 +245,74 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
     cudaDeviceSynchronize();
     record.total_time = total_tc.get_elapsed();
   }
+
+  return output;
+}
+// ==================== historic implementation ========================
+
+float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
+  uint64_t elements = n * n * n;
+
+  float *output;
+  cudaMallocHost((void **)&output, elements * sizeof(float),
+                 cudaHostAllocWriteCombined);
+
+  float *pinned_flat_cube;
+  cudaMallocHost((void **)&pinned_flat_cube, elements * sizeof(float),
+                 cudaHostAllocWriteCombined);
+  flatten_cube(input, pinned_flat_cube, n);
+
+  cudaStream_t streams[n_stream + 1];
+
+  cudaEvent_t h_to_d_copy_start[n_stream + 1], h_to_d_copy_end[n_stream + 1],
+      d_to_h_copy_start[n_stream + 1], d_to_h_copy_end[n_stream + 1],
+      kernel_start[n_stream + 1], kernel_end[n_stream + 1];
+
+  for (int i = 1; i <= n_stream; ++i) {
+    cudaStreamCreate(&streams[i]);
+    cudaEventCreate(&h_to_d_copy_start[i]);
+    cudaEventCreate(&h_to_d_copy_end[i]);
+    cudaEventCreate(&d_to_h_copy_start[i]);
+    cudaEventCreate(&d_to_h_copy_end[i]);
+    cudaEventCreate(&kernel_start[i]);
+    cudaEventCreate(&kernel_end[i]);
+  }
+
+  std::vector<uint64_t> stream_elems(n_stream + 1), stream_elem_offset,
+      stream_bytes(n_stream + 1), stream_byte_offset(n_stream + 1);
+
+  uint64_t elem_per_stream = (elements + n_stream - 1) / n_stream,
+           last_stream_elem = elements - (n_stream - 1) * elem_per_stream;
+
+  for (size_t i = 1; i <= n_stream; ++i) {
+    stream_elem_offset[i] = elem_per_stream * (i - 1);
+    stream_elems[i] =
+        std::min(elem_per_stream, elements - stream_elem_offset[i]);
+    stream_byte_offset[i] = stream_elem_offset[i] * sizeof(float);
+    stream_bytes[i] = stream_elems[i] * sizeof(float);
+  }
+
+  TimeCost total_tc;
+  float *d_input, *d_output;
+  cudaMalloc((void **)&d_input, elements * sizeof(float));
+  cudaMalloc((void **)&d_output, elements * sizeof(float));
+
+  for (int i = 1; i <= n_stream; ++i) {
+    cudaMemcpy(d_input, pinned_flat_cube, elements * sizeof(float),
+               cudaMemcpyHostToDevice);
+
+    uint64_t grid_dim = (elements + block_dim - 1) / block_dim;
+
+    basic<<<grid_dim, block_dim>>>(d_input, d_output, n);
+    cudaDeviceSynchronize();
+    check_kernel_err();
+
+    cudaMemcpy(output, d_output, elements * sizeof(float),
+               cudaMemcpyDeviceToHost);
+
+    cudaDeviceSynchronize();
+  }
+  record.total_time = total_tc.get_elapsed();
 
   return output;
 }
