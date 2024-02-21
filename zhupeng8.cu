@@ -184,6 +184,17 @@ __global__ void basic_streaming(const float *input, float *output,
   return;
 }
 
+double sum_array(float *output, uint64_t n) {
+  double sum = 0;
+
+  for (uint64_t pos = 0; pos < n; pos++) {
+    uint64_t i = pos / (n * n), j = pos % (n * n) / n, k = pos % (n * n) % n;
+    sum += (double)output[pos] * (((i + j + k) % 10) ? 1 : -1);
+  }
+
+  return sum;
+}
+
 double sum_cube(float ***output, uint64_t n) {
   double sum = 0;
 
@@ -357,8 +368,8 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
 
   // debug stream stats
   // for (size_t i = 1; i <= n_stream; ++i) {
-  //   printf("stream:%lu, %lu,%lu,%lu,%lu\n", i, stream_elem_offset[i],
-  //          stream_elems[i], stream_byte_offset[i], stream_bytes[i]);
+  // printf("stream:%lu, %lu,%lu,%lu,%lu\n", i, stream_elem_offset[i],
+  //        stream_elems[i], stream_byte_offset[i], stream_bytes[i]);
   // }
 
   // printf("stats calculated\n");
@@ -368,7 +379,6 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
   gpu_err_check(cudaMalloc((void **)&d_input, elements * sizeof(float)));
   gpu_err_check(cudaMalloc((void **)&d_output, elements * sizeof(float)));
 
-  TimeCost debug_h_to_d_tc;
   // start all copy event
   for (int i = 1; i <= n_stream; ++i) {
     if (stream_elems[i] <= 0) {
@@ -380,50 +390,61 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
                                   stream_bytes[i], cudaMemcpyHostToDevice,
                                   streams[i]));
     gpu_err_check(cudaEventRecord(h_to_d_copy_end[i], streams[i]));
-  }
-  printf("tc launching all copy to:%lf\n", debug_h_to_d_tc.get_elapsed());
-
-  // start kernel
-  TimeCost debug_kernel_tc;
-  for (int i = 1; i <= n_stream; ++i) {
-    if (stream_elems[i] <= 0) {
-      break;
-    }
-
-    // wait for the copy on the next stream to finish first
-    if (i < n_stream && stream_elems[i + 1] > 0) {
-      // cudaStreamWaitEvent(streams[i], h_to_d_copy_end[i + 1]);
-      cudaStreamSynchronize(streams[i + 1]);
-    }
-
-    uint64_t grid_dim = (stream_elems[i] + block_dim - 1) / block_dim;
-    // printf("stream:%d, grid_dim:%lu\n", i, grid_dim);
-    gpu_err_check(cudaEventRecord(kernel_start[i], streams[i]));
-    basic_streaming<<<grid_dim, block_dim, 0, streams[i]>>>(
-        d_input, d_output, n, i, stream_elems[i], stream_elem_offset[i]);
-    gpu_err_check(cudaEventRecord(kernel_end[i], streams[i]));
-  }
-  printf("tc launching all kernel:%lf\n", debug_kernel_tc.get_elapsed());
-
-  // start all copy back event
-  for (int i = 1; i <= n_stream; ++i) {
-    if (stream_elems[i] <= 0) {
-      break;
-    }
-
-    // wait for the kernel on the current stream to finish first
-    // cudaStreamWaitEvent(streams[i], kernel_end[i]);
     cudaStreamSynchronize(streams[i]);
 
-    gpu_err_check(cudaEventRecord(d_to_h_copy_start[i], streams[i]));
-    gpu_err_check(cudaMemcpyAsync(&(pinned_output[stream_elem_offset[i]]),
-                                  &(d_output[stream_elem_offset[i]]),
-                                  stream_bytes[i], cudaMemcpyDeviceToHost,
-                                  streams[i]));
-    gpu_err_check(cudaEventRecord(d_to_h_copy_end[i], streams[i]));
+    // launch the previous stream kernel
+    if (i > 1) {
+      int launch_id = i - 1;
+      uint64_t grid_dim = (stream_elems[launch_id] + block_dim - 1) / block_dim;
+      // printf("stream:%d, grid_dim:%lu\n", i, grid_dim);
+      gpu_err_check(
+          cudaEventRecord(kernel_start[launch_id], streams[launch_id]));
+      basic_streaming<<<grid_dim, block_dim, 0, streams[launch_id]>>>(
+          d_input, d_output, n, launch_id, stream_elems[launch_id],
+          stream_elem_offset[launch_id]);
+      gpu_err_check(cudaEventRecord(kernel_end[launch_id], streams[launch_id]));
+
+      // start copy back
+      gpu_err_check(
+          cudaEventRecord(d_to_h_copy_start[launch_id], streams[launch_id]));
+      gpu_err_check(cudaMemcpyAsync(
+          &(pinned_output[stream_elem_offset[launch_id]]),
+          &(d_output[stream_elem_offset[launch_id]]), stream_bytes[launch_id],
+          cudaMemcpyDeviceToHost, streams[launch_id]));
+      gpu_err_check(
+          cudaEventRecord(d_to_h_copy_end[launch_id], streams[launch_id]));
+    }
+
+    // if last stream, just launch kernel
+    if (i == n_stream || stream_elems[i + 1] == 0) {
+      int launch_id = i;
+      uint64_t grid_dim = (stream_elems[launch_id] + block_dim - 1) / block_dim;
+      // printf("stream:%d, grid_dim:%lu\n", i, grid_dim);
+      gpu_err_check(
+          cudaEventRecord(kernel_start[launch_id], streams[launch_id]));
+      basic_streaming<<<grid_dim, block_dim, 0, streams[launch_id]>>>(
+          d_input, d_output, n, launch_id, stream_elems[launch_id],
+          stream_elem_offset[launch_id]);
+      gpu_err_check(cudaEventRecord(kernel_end[launch_id], streams[launch_id]));
+
+      // start copy back
+      gpu_err_check(
+          cudaEventRecord(d_to_h_copy_start[launch_id], streams[launch_id]));
+      gpu_err_check(cudaMemcpyAsync(
+          &(pinned_output[stream_elem_offset[launch_id]]),
+          &(d_output[stream_elem_offset[launch_id]]), stream_bytes[launch_id],
+          cudaMemcpyDeviceToHost, streams[launch_id]));
+      gpu_err_check(
+          cudaEventRecord(d_to_h_copy_end[launch_id], streams[launch_id]));
+    }
   }
 
-  cudaDeviceSynchronize();
+  TimeCost debug_stream_sync_tc;
+  for (int i = 1; i <= n_stream; ++i) {
+    cudaStreamSynchronize(streams[i]);
+    // printf("synced stream %d, tc:%lf\n", i,
+    // debug_stream_sync_tc.get_elapsed());
+  }
 
   // update record
   record.total_time = total_tc.get_elapsed();
@@ -436,25 +457,30 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
       break;
     }
     float ms = 0;
-    cudaEventElapsedTime(&ms, h_to_d_copy_start[i], h_to_d_copy_end[i]);
-    // printf("stream:%d, htod copy time:%f\n", i, ms);
+    gpu_err_check(
+        cudaEventElapsedTime(&ms, h_to_d_copy_start[i], h_to_d_copy_end[i]));
+    float h_to_d_cost = ms;
     record.host_to_device_copy += ms;
-    cudaEventElapsedTime(&ms, kernel_start[i], kernel_end[i]);
+    gpu_err_check(cudaEventElapsedTime(&ms, kernel_start[i], kernel_end[i]));
+    float kernel_cost = ms;
     record.kernel_time += ms;
-    cudaEventElapsedTime(&ms, d_to_h_copy_start[i], d_to_h_copy_end[i]);
-    // printf("stream:%d, dtoh copy time:%f\n", i, ms);
+    gpu_err_check(
+        cudaEventElapsedTime(&ms, d_to_h_copy_start[i], d_to_h_copy_end[i]));
+    float d_to_h_cost = ms;
     record.device_to_host_copy += ms;
+    // printf("stream %d time stats, %f, %f, %f\n", i, h_to_d_cost, kernel_cost,
+    //        d_to_h_cost);
   }
 
   return pinned_output;
 }
 
 void gpu_cal_compare(float ***input, float ***cpu_output, uint64_t n) {
-  {
-    ExecRecord record;
-    basic_gpu(input, n, record);
-    record.print();
-  }
+  // {
+  //   ExecRecord record;
+  //   basic_gpu(input, n, record);
+  //   record.print();
+  // }
 
   ExecRecord record;
   float *gpu_output = gpu_calculation(input, n, record);
@@ -463,6 +489,11 @@ void gpu_cal_compare(float ***input, float ***cpu_output, uint64_t n) {
   float *flat_cpu_output = (float *)malloc(n * n * n * sizeof(float));
   flatten_cube(cpu_output, flat_cpu_output, n);
   verify_result(flat_cpu_output, gpu_output, n);
+  double flat_cpu_result = sum_array(flat_cpu_output, n * n * n);
+  printf("flat cpu sum:%lf\n", flat_cpu_result);
+
+  double gpu_result = sum_array(gpu_output, n * n * n);
+  printf("gpu sum:%lf\n", gpu_result);
 }
 
 int main(int argc, char *argv[]) {
@@ -492,9 +523,9 @@ int main(int argc, char *argv[]) {
   cpu_malloc_cube(&input, n);
   cpu_malloc_cube(&output, n);
   gen_cube(input, n);
-  TimeCost cpu_tc;
+  // TimeCost cpu_tc;
   cpu_calculation(input, output, n);
-  printf("cpu cost:%lf\n", cpu_tc.get_elapsed());
+  // printf("cpu cost:%lf\n", cpu_tc.get_elapsed());
   double cpu_cal_sum = sum_cube(output, n);
   printf("cpu result sum:%lf\n", cpu_cal_sum);
 

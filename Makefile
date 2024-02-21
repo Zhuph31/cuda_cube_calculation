@@ -3,8 +3,8 @@
 ################################################################################
 CC=g++
 NVCC=nvcc
-CXXFLAGS= -Wall -std=c++17 -O2 -MD -MP -g
-CUDAFLAGS= $(aflags) -std=c++17 -arch=compute_86 -MD -MP 
+CXXFLAGS= -Wall -std=c++17 -O2 -MD -MP -g -Wno-unused
+CUDAFLAGS= $(aflags) -std=c++17 -arch=compute_86 -MD -MP #-Wno-unused
 LIBS= -lcudart
 LIBDIRS=
 INCDIRS=
