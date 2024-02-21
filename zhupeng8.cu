@@ -110,7 +110,9 @@ void flatten_cube(float ***cube, float *array, uint64_t n) {
   for (uint64_t i = 0; i < n; i++) {
     for (uint64_t j = 0; j < n; j++) {
       for (uint64_t k = 0; k < n; k++) {
-        array[i * n * n + j * n + k] = cube[i][j][k];
+        uint64_t pos = i * n * n + j * n + k;
+        array[pos] = cube[i][j][k];
+        // printf("pos:%lu, %lu,%lu,%lu\n", pos, i, j, k);
       }
     }
   }
@@ -187,9 +189,11 @@ __global__ void basic_streaming(const float *input, float *output,
 double sum_array(float *output, uint64_t n) {
   double sum = 0;
 
-  for (uint64_t pos = 0; pos < n; pos++) {
+  uint64_t elements = n * n * n;
+  for (uint64_t pos = 0; pos < elements; pos++) {
     uint64_t i = pos / (n * n), j = pos % (n * n) / n, k = pos % (n * n) % n;
     sum += (double)output[pos] * (((i + j + k) % 10) ? 1 : -1);
+    // printf("pos:%lu, %lu,%lu,%lu\n", pos, i, j, k);
   }
 
   return sum;
@@ -236,7 +240,7 @@ void verify_result(float *h_output, float *d_output, uint64_t n) {
   for (int i = 0; i < thread_num; ++i) {
     threads[i].join();
   }
-  printf("verified, equal\n");
+  // printf("verified, equal\n");
 }
 
 void debug_host_array(float *h_array, int elements) {
@@ -484,16 +488,16 @@ void gpu_cal_compare(float ***input, float ***cpu_output, uint64_t n) {
 
   ExecRecord record;
   float *gpu_output = gpu_calculation(input, n, record);
-  record.print();
+  // record.print();
 
-  float *flat_cpu_output = (float *)malloc(n * n * n * sizeof(float));
-  flatten_cube(cpu_output, flat_cpu_output, n);
-  verify_result(flat_cpu_output, gpu_output, n);
-  double flat_cpu_result = sum_array(flat_cpu_output, n * n * n);
-  printf("flat cpu sum:%lf\n", flat_cpu_result);
+  // float *flat_cpu_output = (float *)malloc(n * n * n * sizeof(float));
+  // flatten_cube(cpu_output, flat_cpu_output, n);
+  // verify_result(flat_cpu_output, gpu_output, n);
+  // double flat_cpu_result = sum_array(flat_cpu_output, n);
+  // printf("flat cpu sum:%lf\n", flat_cpu_result);
 
-  double gpu_result = sum_array(gpu_output, n * n * n);
-  printf("gpu sum:%lf\n", gpu_result);
+  double gpu_result = sum_array(gpu_output, n);
+  printf("%lf %d\n", gpu_result, int(std::ceil(record.total_time)));
 }
 
 int main(int argc, char *argv[]) {
@@ -521,13 +525,13 @@ int main(int argc, char *argv[]) {
 
   float ***input, ***output;
   cpu_malloc_cube(&input, n);
-  cpu_malloc_cube(&output, n);
+  // cpu_malloc_cube(&output, n);
   gen_cube(input, n);
   // TimeCost cpu_tc;
-  cpu_calculation(input, output, n);
+  // cpu_calculation(input, output, n);
   // printf("cpu cost:%lf\n", cpu_tc.get_elapsed());
-  double cpu_cal_sum = sum_cube(output, n);
-  printf("cpu result sum:%lf\n", cpu_cal_sum);
+  // double cpu_cal_sum = sum_cube(output, n);
+  // printf("cpu result sum:%lf\n", cpu_cal_sum);
 
   gpu_cal_compare(input, output, n);
 
