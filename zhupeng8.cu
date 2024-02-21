@@ -333,19 +333,9 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
 
   cudaStream_t streams[n_stream + 1];
 
-  cudaEvent_t h_to_d_copy_start[n_stream + 1], h_to_d_copy_end[n_stream + 1],
-      d_to_h_copy_start[n_stream + 1], d_to_h_copy_end[n_stream + 1],
-      kernel_start[n_stream + 1], kernel_end[n_stream + 1];
-
   // create streams and events
   for (int i = 1; i <= n_stream; ++i) {
     cudaStreamCreate(&streams[i]);
-    cudaEventCreate(&h_to_d_copy_start[i]);
-    cudaEventCreate(&h_to_d_copy_end[i]);
-    cudaEventCreate(&d_to_h_copy_start[i]);
-    cudaEventCreate(&d_to_h_copy_end[i]);
-    cudaEventCreate(&kernel_start[i]);
-    cudaEventCreate(&kernel_end[i]);
   }
 
   // calculate each stream's elements and offset
@@ -388,12 +378,10 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
     if (stream_elems[i] <= 0) {
       break;
     }
-    gpu_err_check(cudaEventRecord(h_to_d_copy_start[i], streams[i]));
     gpu_err_check(cudaMemcpyAsync(&(d_input[stream_elem_offset[i]]),
                                   &(pinned_flat_input[stream_elem_offset[i]]),
                                   stream_bytes[i], cudaMemcpyHostToDevice,
                                   streams[i]));
-    gpu_err_check(cudaEventRecord(h_to_d_copy_end[i], streams[i]));
     cudaStreamSynchronize(streams[i]);
 
     // launch the previous stream kernel
@@ -401,22 +389,15 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
       int launch_id = i - 1;
       uint64_t grid_dim = (stream_elems[launch_id] + block_dim - 1) / block_dim;
       // printf("stream:%d, grid_dim:%lu\n", i, grid_dim);
-      gpu_err_check(
-          cudaEventRecord(kernel_start[launch_id], streams[launch_id]));
       basic_streaming<<<grid_dim, block_dim, 0, streams[launch_id]>>>(
           d_input, d_output, n, launch_id, stream_elems[launch_id],
           stream_elem_offset[launch_id]);
-      gpu_err_check(cudaEventRecord(kernel_end[launch_id], streams[launch_id]));
 
       // start copy back
-      gpu_err_check(
-          cudaEventRecord(d_to_h_copy_start[launch_id], streams[launch_id]));
       gpu_err_check(cudaMemcpyAsync(
           &(pinned_output[stream_elem_offset[launch_id]]),
           &(d_output[stream_elem_offset[launch_id]]), stream_bytes[launch_id],
           cudaMemcpyDeviceToHost, streams[launch_id]));
-      gpu_err_check(
-          cudaEventRecord(d_to_h_copy_end[launch_id], streams[launch_id]));
     }
 
     // if last stream, just launch kernel
@@ -424,22 +405,15 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
       int launch_id = i;
       uint64_t grid_dim = (stream_elems[launch_id] + block_dim - 1) / block_dim;
       // printf("stream:%d, grid_dim:%lu\n", i, grid_dim);
-      gpu_err_check(
-          cudaEventRecord(kernel_start[launch_id], streams[launch_id]));
       basic_streaming<<<grid_dim, block_dim, 0, streams[launch_id]>>>(
           d_input, d_output, n, launch_id, stream_elems[launch_id],
           stream_elem_offset[launch_id]);
-      gpu_err_check(cudaEventRecord(kernel_end[launch_id], streams[launch_id]));
 
       // start copy back
-      gpu_err_check(
-          cudaEventRecord(d_to_h_copy_start[launch_id], streams[launch_id]));
       gpu_err_check(cudaMemcpyAsync(
           &(pinned_output[stream_elem_offset[launch_id]]),
           &(d_output[stream_elem_offset[launch_id]]), stream_bytes[launch_id],
           cudaMemcpyDeviceToHost, streams[launch_id]));
-      gpu_err_check(
-          cudaEventRecord(d_to_h_copy_end[launch_id], streams[launch_id]));
     }
   }
 
@@ -455,26 +429,6 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
 
   record.kernel_time = 0;
   record.device_to_host_copy = 0;
-
-  for (int i = 1; i <= n_stream; ++i) {
-    if (stream_elems[i] <= 0) {
-      break;
-    }
-    float ms = 0;
-    gpu_err_check(
-        cudaEventElapsedTime(&ms, h_to_d_copy_start[i], h_to_d_copy_end[i]));
-    float h_to_d_cost = ms;
-    record.host_to_device_copy += ms;
-    gpu_err_check(cudaEventElapsedTime(&ms, kernel_start[i], kernel_end[i]));
-    float kernel_cost = ms;
-    record.kernel_time += ms;
-    gpu_err_check(
-        cudaEventElapsedTime(&ms, d_to_h_copy_start[i], d_to_h_copy_end[i]));
-    float d_to_h_cost = ms;
-    record.device_to_host_copy += ms;
-    // printf("stream %d time stats, %f, %f, %f\n", i, h_to_d_cost, kernel_cost,
-    //        d_to_h_cost);
-  }
 
   return pinned_output;
 }
