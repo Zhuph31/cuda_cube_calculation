@@ -11,7 +11,7 @@
 #define FLAT_INDEX(array, i, j, k, n) (array[(i) * (n) * (n) + (j) * (n) + (k)])
 
 uint64_t block_dim = 1024;
-uint64_t n_stream = 10;
+uint64_t n_stream = 60;
 
 #define gpu_err_check(ans) gpu_err_check_impl((ans), __FILE__, __LINE__)
 inline void gpu_err_check_impl(cudaError_t code, const char *file, int line,
