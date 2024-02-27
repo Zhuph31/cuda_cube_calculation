@@ -240,7 +240,7 @@ void verify_result(float *h_output, float *d_output, uint64_t n) {
   for (int i = 0; i < thread_num; ++i) {
     threads[i].join();
   }
-  // printf("verified, equal\n");
+  printf("verified, equal\n");
 }
 
 void debug_host_array(float *h_array, int elements) {
@@ -490,10 +490,10 @@ void gpu_cal_compare(float ***input, float ***cpu_output, uint64_t n) {
   float *gpu_output = gpu_calculation(input, n, record);
   // record.print();
 
-  // float *flat_cpu_output = (float *)malloc(n * n * n * sizeof(float));
-  // flatten_cube(cpu_output, flat_cpu_output, n);
-  // verify_result(flat_cpu_output, gpu_output, n);
-  // double flat_cpu_result = sum_array(flat_cpu_output, n);
+  float *flat_cpu_output = (float *)malloc(n * n * n * sizeof(float));
+  flatten_cube(cpu_output, flat_cpu_output, n);
+  verify_result(flat_cpu_output, gpu_output, n);
+  double flat_cpu_result = sum_array(flat_cpu_output, n);
   // printf("flat cpu sum:%lf\n", flat_cpu_result);
 
   double gpu_result = sum_array(gpu_output, n);
@@ -525,13 +525,13 @@ int main(int argc, char *argv[]) {
 
   float ***input, ***output;
   cpu_malloc_cube(&input, n);
-  // cpu_malloc_cube(&output, n);
+  cpu_malloc_cube(&output, n);
   gen_cube(input, n);
-  // TimeCost cpu_tc;
-  // cpu_calculation(input, output, n);
+  TimeCost cpu_tc;
+  cpu_calculation(input, output, n);
   // printf("cpu cost:%lf\n", cpu_tc.get_elapsed());
-  // double cpu_cal_sum = sum_cube(output, n);
-  // printf("cpu result sum:%lf\n", cpu_cal_sum);
+  double cpu_cal_sum = sum_cube(output, n);
+  printf("cpu result sum:%lf\n", cpu_cal_sum);
 
   gpu_cal_compare(input, output, n);
 
