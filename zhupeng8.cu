@@ -1,539 +1,197 @@
+/*
+* ECE1782 - W2024 - Lab 2 - Sample Code
+* Sample Test Cases (sum)
+
+n, result 
+100,18295201.010496
+200,147100808.124588
+300,497296827.464880
+400,1179763265.153962
+500,2305380127.308517
+600,3985027420.060339
+700,6329585154.758305
+800,9449933335.045414
+*/
+
 #include <algorithm>
-#include <cmath>
-#include <iostream>
-#include <stdarg.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/time.h>
-#include <thread>
-#include <unistd.h>
-#include <unordered_map>
-#include <vector>
 
-#define FLAT_INDEX(array, i, j, k, n) (array[(i) * (n) * (n) + (j) * (n) + (k)])
-
-uint64_t block_dim = 1024;
-uint64_t n_stream = 10;
-
-#define gpu_err_check(ans) gpu_err_check_impl((ans), __FILE__, __LINE__)
-inline void gpu_err_check_impl(cudaError_t code, const char *file, int line,
-                               bool abort = true) {
-  if (code != cudaSuccess) {
-    fprintf(stderr, "CUDA Error: %d %s %s:%d\n", code, cudaGetErrorString(code),
-            file, line);
-    if (abort) {
-      fflush(stderr);
-      exit(code);
-    }
-  }
-}
-
-void debug_printf(const char *format, ...) {
-  va_list args;
-  va_start(args, format);
-  vprintf(format, args);
-  va_end(args);
-}
-
-class TimeCost {
-  double get_timestamp() const {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_usec / 1000 + tv.tv_sec * 1000;
-  }
-
-  double start_ts;
-
-public:
-  TimeCost() { start_ts = get_timestamp(); }
-  double get_elapsed() const { return get_timestamp() - start_ts; }
-};
-
-inline void check_kernel_err() {
-  cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    fprintf(stderr, "Error: kernel invoke failed, %s\n",
-            cudaGetErrorString(err));
-    exit(-1);
-  }
-}
-
-void print_cube(float ***cube, uint64_t n) {
-  for (uint64_t i = 0; i < n; i++) {
-    for (uint64_t j = 0; j < n; j++) {
-      for (uint64_t k = 0; k < n; k++) {
-        printf("%lf, ", cube[i][j][k]);
-      }
-      printf("\n");
-    }
-    printf("\n");
-  }
-}
-
-void cpu_malloc_cube(float ****cube_ref, uint64_t n) {
-  (*cube_ref) = (float ***)malloc(n * sizeof(float **));
-  for (uint64_t i = 0; i < n; i++) {
-    (*cube_ref)[i] = (float **)malloc(n * sizeof(float *));
-    for (uint64_t j = 0; j < n; j++) {
-      (*cube_ref)[i][j] = (float *)malloc(n * sizeof(float));
-    }
-  }
-}
-
-void gen_cube(float ***cube, uint64_t n) {
-  for (uint64_t i = 0; i < n; i++) {
-    for (uint64_t j = 0; j < n; j++) {
-      for (uint64_t k = 0; k < n; k++) {
-        cube[i][j][k] = (float)((i + j + k) % 10) * (float)1.1;
-      }
-    }
-  }
-}
-
-void cpu_calculation(float ***input, float ***output, uint64_t n) {
-  for (uint64_t i = 0; i < n; i++) {
-    for (uint64_t j = 0; j < n; j++) {
-      for (uint64_t k = 0; k < n; k++) {
-        float elem1 = i > 0 ? input[i - 1][j][k] : 0;
-        float elem2 = i < n - 1 ? input[i + 1][j][k] : 0;
-        float elem3 = j > 0 ? input[i][j - 1][k] : 0;
-        float elem4 = j < n - 1 ? input[i][j + 1][k] : 0;
-        float elem5 = k > 0 ? input[i][j][k - 1] : 0;
-        float elem6 = k < n - 1 ? input[i][j][k + 1] : 0;
-
-        output[i][j][k] =
-            (float)0.8 * (elem1 + elem2 + elem3 + elem4 + elem5 + elem6);
-      }
-    }
-  }
-}
-
-void flatten_cube(float ***cube, float *array, uint64_t n) {
-  for (uint64_t i = 0; i < n; i++) {
-    for (uint64_t j = 0; j < n; j++) {
-      for (uint64_t k = 0; k < n; k++) {
-        uint64_t pos = i * n * n + j * n + k;
-        array[pos] = cube[i][j][k];
-        // printf("pos:%lu, %lu,%lu,%lu\n", pos, i, j, k);
-      }
-    }
-  }
-}
-
-__global__ void basic(const float *input, float *output, unsigned int n) {
-  int block_id = blockIdx.x;
-  int thread_id = threadIdx.x;
-  int block_offset = block_id * blockDim.x;
-  uint64_t global_thread_id = block_offset + thread_id;
-
-  uint64_t i = global_thread_id / (n * n), j = global_thread_id % (n * n) / n,
-           k = global_thread_id % (n * n) % n;
-
-  if (i >= n || j >= n || k >= n) {
+/*You can use the following for any CUDA function that returns cudaError_t
+ * type*/
+#define gpuErrchk(ans)                                                         \
+  { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line,
+                      bool abort = true) {
+  if (code == cudaSuccess)
     return;
-  }
 
-  float elem1 = i > 0 ? FLAT_INDEX(input, i - 1, j, k, n) : 0;
-  float elem2 = i < n - 1 ? FLAT_INDEX(input, i + 1, j, k, n) : 0;
-  float elem3 = j > 0 ? FLAT_INDEX(input, i, j - 1, k, n) : 0;
-  float elem4 = j < n - 1 ? FLAT_INDEX(input, i, j + 1, k, n) : 0;
-  float elem5 = k > 0 ? FLAT_INDEX(input, i, j, k - 1, n) : 0;
-  float elem6 = k < n - 1 ? FLAT_INDEX(input, i, j, k + 1, n) : 0;
-
-  FLAT_INDEX(output, i, j, k, n) =
-      (float)0.8 * (elem1 + elem2 + elem3 + elem4 + elem5 + elem6);
-
-  // printf("global thread id:%lu, %lu,%lu,%lu, pos_elem:%lf, "
-  //        "elems:%lf,%lf,%lf,%lf,%lf,%lf"
-  //        ", res:%lf\n",
-  //        global_thread_id, i, j, k, FLAT_INDEX(input, i, j, k, n), elem1,
-  //        elem2, elem3, elem4, elem5, elem6, FLAT_INDEX(output, i, j, k, n));
-
-  return;
+  fprintf(stderr, "Error: %s %s %d\n", cudaGetErrorString(code), file, line);
+  if (abort)
+    exit(code);
 }
 
-__global__ void basic_streaming(const float *input, float *output,
-                                unsigned int n, int stream_id,
-                                uint64_t stream_elems, uint64_t stream_offset) {
-  int block_id = blockIdx.x;
-  int thread_id = threadIdx.x;
-  int block_offset = block_id * blockDim.x;
+/*Use the following to get a timestamp*/
+double getTimeStamp() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return (double)tv.tv_usec / 1000000 + tv.tv_sec;
+}
 
-  uint64_t global_thread_id = stream_offset + block_offset + thread_id;
-  uint64_t inner_stream_thread_id = block_offset + thread_id;
+__global__ void jacobiKernel(float *a, float *b, int n, int last_row,
+                             int offset) {
+  int i = (blockIdx.x * blockDim.x + threadIdx.x) / (n * n) + offset;
+  int j = ((blockIdx.x * blockDim.x + threadIdx.x) / n) % n;
+  int k = (blockIdx.x * blockDim.x + threadIdx.x) % n;
 
-  uint64_t i = global_thread_id / (n * n), j = global_thread_id % (n * n) / n,
-           k = global_thread_id % (n * n) % n;
-
-  if (inner_stream_thread_id >= stream_elems || i >= n || j >= n || k >= n) {
+  if (i >= last_row || j >= n || k >= n)
     return;
-  }
 
-  float elem1 = i > 0 ? FLAT_INDEX(input, i - 1, j, k, n) : 0;
-  float elem2 = i < n - 1 ? FLAT_INDEX(input, i + 1, j, k, n) : 0;
-  float elem3 = j > 0 ? FLAT_INDEX(input, i, j - 1, k, n) : 0;
-  float elem4 = j < n - 1 ? FLAT_INDEX(input, i, j + 1, k, n) : 0;
-  float elem5 = k > 0 ? FLAT_INDEX(input, i, j, k - 1, n) : 0;
-  float elem6 = k < n - 1 ? FLAT_INDEX(input, i, j, k + 1, n) : 0;
+  // float newVal = 0.0f;
+  // if(i > 0) newVal += b[(i-1)*n*n + j*n + k];
+  // if(i < n-1) newVal += b[(i+1)*n*n + j*n + k];
+  // if(j > 0) newVal += b[i*n*n + (j-1)*n + k];
+  // if(j < n-1) newVal += b[i*n*n + (j+1)*n + k];
+  // if(k > 0) newVal += b[i*n*n + j*n + (k-1)];
+  // if(k < n-1) newVal += b[i*n*n + j*n + (k+1)];
 
-  FLAT_INDEX(output, i, j, k, n) =
-      (float)0.8 * (elem1 + elem2 + elem3 + elem4 + elem5 + elem6);
-
-  // printf("global thread id:%lu, %lu,%lu,%lu, pos_elem:%lf, "
-  //        "elems:%lf,%lf,%lf,%lf,%lf,%lf"
-  //        ", res:%lf\n",
-  //        global_thread_id, i, j, k, FLAT_INDEX(input, i, j, k, n), elem1,
-  //        elem2, elem3, elem4, elem5, elem6, FLAT_INDEX(output, i, j, k, n));
-
-  return;
-}
-
-double sum_array(float *output, uint64_t n) {
-  double sum = 0;
-
-  uint64_t elements = n * n * n;
-  for (uint64_t pos = 0; pos < elements; pos++) {
-    uint64_t i = pos / (n * n), j = pos % (n * n) / n, k = pos % (n * n) % n;
-    sum += (double)output[pos] * (((i + j + k) % 10) ? 1 : -1);
-    // printf("pos:%lu, %lu,%lu,%lu\n", pos, i, j, k);
-  }
-
-  return sum;
-}
-
-double sum_cube(float ***output, uint64_t n) {
-  double sum = 0;
-
-  for (uint64_t i = 0; i < n; i++) {
-    for (uint64_t j = 0; j < n; j++) {
-      for (uint64_t k = 0; k < n; k++) {
-        sum += (double)output[i][j][k] * (((i + j + k) % 10) ? 1 : -1);
-      }
-    }
-  }
-
-  return sum;
-}
-
-void verify_result(float *h_output, float *d_output, uint64_t n) {
-  uint64_t elements = n * n * n;
-  int thread_num = elements / 10000;
-  thread_num = thread_num == 0 ? 1 : thread_num;
-  thread_num = thread_num > 10 ? 10 : thread_num;
-  uint64_t elem_per_thread = (elements + thread_num - 1) / thread_num;
-  // printf("using %d threads, elem per thread:%lu", thread_num,
-  // elem_per_thread);
-
-  std::vector<std::thread> threads;
-
-  for (int i = 0; i < thread_num; ++i) {
-    threads.emplace_back(std::thread([h_output, d_output, n, thread_id = i,
-                                      elem_per_thread, elements]() {
-      for (uint64_t pos = thread_id * elem_per_thread; pos < elements; ++pos) {
-        if (h_output[pos] != d_output[pos]) {
-          printf("unequal\n");
-          printf("idx:%lu, %lf vs %lf\n", pos, h_output[pos], d_output[pos]);
-          exit(1);
-        }
-      }
-    }));
-  }
-
-  for (int i = 0; i < thread_num; ++i) {
-    threads[i].join();
-  }
-  printf("verified, equal\n");
-}
-
-void debug_host_array(float *h_array, int elements) {
-  printf("debug host array\n");
-  for (size_t i = 0; i < elements; ++i) {
-    printf("%lf,", h_array[i]);
-  }
-  printf("\n");
-}
-
-void debug_device_array(float *d_array, int elements) {
-  printf("debug device array\n");
-  float *test = (float *)malloc(elements * sizeof(float));
-  cudaMemcpy(test, d_array, elements * sizeof(float), cudaMemcpyDeviceToHost);
-  debug_host_array(test, elements);
-}
-
-struct ExecRecord {
-  double host_to_device_copy = 0;
-  double device_to_host_copy = 0;
-  double kernel_time = 0;
-  double total_time = 0;
-  void print() const {
-    printf("%lf, %lf, %lf, %lf\n", total_time, host_to_device_copy, kernel_time,
-           device_to_host_copy);
-  }
-};
-
-// ==================== historic implementation ========================
-float *basic_gpu(float ***input, uint64_t n, ExecRecord &record) {
-  uint64_t elements = n * n * n;
-
-  float *output;
-  cudaMallocHost((void **)&output, elements * sizeof(float),
-                 cudaHostAllocWriteCombined);
-
-  float *pinned_flat_input;
-  cudaMallocHost((void **)&pinned_flat_input, elements * sizeof(float),
-                 cudaHostAllocWriteCombined);
-  flatten_cube(input, pinned_flat_input, n);
-
-  {
-    TimeCost total_tc;
-    float *d_input, *d_output;
-    cudaMalloc((void **)&d_input, elements * sizeof(float));
-    cudaMalloc((void **)&d_output, elements * sizeof(float));
-
-    TimeCost host_to_device_copy_tc;
-    cudaMemcpy(d_input, pinned_flat_input, elements * sizeof(float),
-               cudaMemcpyHostToDevice);
-    record.host_to_device_copy = host_to_device_copy_tc.get_elapsed();
-
-    uint64_t grid_dim = (elements + block_dim - 1) / block_dim;
-    // printf("grid_dim:%lu, block_dim:%lu\n", grid_dim, block_dim);
-
-    TimeCost kernel_tc;
-    basic<<<grid_dim, block_dim>>>(d_input, d_output, n);
-
-    cudaDeviceSynchronize();
-    check_kernel_err();
-    record.kernel_time = kernel_tc.get_elapsed();
-
-    TimeCost device_to_host_copy_tc;
-    cudaMemcpy(output, d_output, elements * sizeof(float),
-               cudaMemcpyDeviceToHost);
-    record.device_to_host_copy = device_to_host_copy_tc.get_elapsed();
-
-    cudaDeviceSynchronize();
-    record.total_time = total_tc.get_elapsed();
-  }
-
-  return output;
-}
-// ==================== historic implementation ========================
-
-float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
-  uint64_t elements = n * n * n;
-
-  float *pinned_output;
-  gpu_err_check(cudaMallocHost((void **)&pinned_output,
-                               elements * sizeof(float),
-                               cudaHostAllocWriteCombined));
-
-  float *pinned_flat_input;
-  gpu_err_check(cudaMallocHost((void **)&pinned_flat_input,
-                               elements * sizeof(float),
-                               cudaHostAllocWriteCombined));
-  flatten_cube(input, pinned_flat_input, n);
-  // debug_host_array(pinned_flat_input, elements);
-
-  cudaStream_t streams[n_stream + 1];
-
-  cudaEvent_t h_to_d_copy_start[n_stream + 1], h_to_d_copy_end[n_stream + 1],
-      d_to_h_copy_start[n_stream + 1], d_to_h_copy_end[n_stream + 1],
-      kernel_start[n_stream + 1], kernel_end[n_stream + 1];
-
-  // create streams and events
-  for (int i = 1; i <= n_stream; ++i) {
-    cudaStreamCreate(&streams[i]);
-    cudaEventCreate(&h_to_d_copy_start[i]);
-    cudaEventCreate(&h_to_d_copy_end[i]);
-    cudaEventCreate(&d_to_h_copy_start[i]);
-    cudaEventCreate(&d_to_h_copy_end[i]);
-    cudaEventCreate(&kernel_start[i]);
-    cudaEventCreate(&kernel_end[i]);
-  }
-
-  // calculate each stream's elements and offset
-  // each stream take at least a layer of elements
-  std::vector<uint64_t> stream_elems(n_stream + 1),
-      stream_elem_offset(n_stream + 1), stream_bytes(n_stream + 1),
-      stream_byte_offset(n_stream + 1);
-  uint64_t elem_per_stream = (elements + n_stream - 1) / n_stream;
-  uint64_t elem_per_layer = n * n;
-  elem_per_stream =
-      std::ceil(double(elem_per_stream) / double(elem_per_layer)) *
-      elem_per_layer;
-
-  for (size_t i = 1; i <= n_stream; ++i) {
-    stream_elem_offset[i] = elem_per_stream * (i - 1);
-    if (stream_elem_offset[i] > elements) {
-      stream_elem_offset[i] = elements;
-    }
-    stream_elems[i] =
-        std::min(elem_per_stream, elements - stream_elem_offset[i]);
-    stream_byte_offset[i] = stream_elem_offset[i] * sizeof(float);
-    stream_bytes[i] = stream_elems[i] * sizeof(float);
-  }
-
-  // debug stream stats
-  // for (size_t i = 1; i <= n_stream; ++i) {
-  // printf("stream:%lu, %lu,%lu,%lu,%lu\n", i, stream_elem_offset[i],
-  //        stream_elems[i], stream_byte_offset[i], stream_bytes[i]);
-  // }
-
-  // printf("stats calculated\n");
-
-  TimeCost total_tc;
-  float *d_input, *d_output;
-  gpu_err_check(cudaMalloc((void **)&d_input, elements * sizeof(float)));
-  gpu_err_check(cudaMalloc((void **)&d_output, elements * sizeof(float)));
-
-  // start all copy event
-  for (int i = 1; i <= n_stream; ++i) {
-    if (stream_elems[i] <= 0) {
-      break;
-    }
-    gpu_err_check(cudaEventRecord(h_to_d_copy_start[i], streams[i]));
-    gpu_err_check(cudaMemcpyAsync(&(d_input[stream_elem_offset[i]]),
-                                  &(pinned_flat_input[stream_elem_offset[i]]),
-                                  stream_bytes[i], cudaMemcpyHostToDevice,
-                                  streams[i]));
-    gpu_err_check(cudaEventRecord(h_to_d_copy_end[i], streams[i]));
-    cudaStreamSynchronize(streams[i]);
-
-    // launch the previous stream kernel
-    if (i > 1) {
-      int launch_id = i - 1;
-      uint64_t grid_dim = (stream_elems[launch_id] + block_dim - 1) / block_dim;
-      // printf("stream:%d, grid_dim:%lu\n", i, grid_dim);
-      gpu_err_check(
-          cudaEventRecord(kernel_start[launch_id], streams[launch_id]));
-      basic_streaming<<<grid_dim, block_dim, 0, streams[launch_id]>>>(
-          d_input, d_output, n, launch_id, stream_elems[launch_id],
-          stream_elem_offset[launch_id]);
-      gpu_err_check(cudaEventRecord(kernel_end[launch_id], streams[launch_id]));
-
-      // start copy back
-      gpu_err_check(
-          cudaEventRecord(d_to_h_copy_start[launch_id], streams[launch_id]));
-      gpu_err_check(cudaMemcpyAsync(
-          &(pinned_output[stream_elem_offset[launch_id]]),
-          &(d_output[stream_elem_offset[launch_id]]), stream_bytes[launch_id],
-          cudaMemcpyDeviceToHost, streams[launch_id]));
-      gpu_err_check(
-          cudaEventRecord(d_to_h_copy_end[launch_id], streams[launch_id]));
-    }
-
-    // if last stream, just launch kernel
-    if (i == n_stream || stream_elems[i + 1] == 0) {
-      int launch_id = i;
-      uint64_t grid_dim = (stream_elems[launch_id] + block_dim - 1) / block_dim;
-      // printf("stream:%d, grid_dim:%lu\n", i, grid_dim);
-      gpu_err_check(
-          cudaEventRecord(kernel_start[launch_id], streams[launch_id]));
-      basic_streaming<<<grid_dim, block_dim, 0, streams[launch_id]>>>(
-          d_input, d_output, n, launch_id, stream_elems[launch_id],
-          stream_elem_offset[launch_id]);
-      gpu_err_check(cudaEventRecord(kernel_end[launch_id], streams[launch_id]));
-
-      // start copy back
-      gpu_err_check(
-          cudaEventRecord(d_to_h_copy_start[launch_id], streams[launch_id]));
-      gpu_err_check(cudaMemcpyAsync(
-          &(pinned_output[stream_elem_offset[launch_id]]),
-          &(d_output[stream_elem_offset[launch_id]]), stream_bytes[launch_id],
-          cudaMemcpyDeviceToHost, streams[launch_id]));
-      gpu_err_check(
-          cudaEventRecord(d_to_h_copy_end[launch_id], streams[launch_id]));
-    }
-  }
-
-  TimeCost debug_stream_sync_tc;
-  for (int i = 1; i <= n_stream; ++i) {
-    cudaStreamSynchronize(streams[i]);
-    // printf("synced stream %d, tc:%lf\n", i,
-    // debug_stream_sync_tc.get_elapsed());
-  }
-
-  // update record
-  record.total_time = total_tc.get_elapsed();
-
-  record.kernel_time = 0;
-  record.device_to_host_copy = 0;
-
-  for (int i = 1; i <= n_stream; ++i) {
-    if (stream_elems[i] <= 0) {
-      break;
-    }
-    float ms = 0;
-    gpu_err_check(
-        cudaEventElapsedTime(&ms, h_to_d_copy_start[i], h_to_d_copy_end[i]));
-    float h_to_d_cost = ms;
-    record.host_to_device_copy += ms;
-    gpu_err_check(cudaEventElapsedTime(&ms, kernel_start[i], kernel_end[i]));
-    float kernel_cost = ms;
-    record.kernel_time += ms;
-    gpu_err_check(
-        cudaEventElapsedTime(&ms, d_to_h_copy_start[i], d_to_h_copy_end[i]));
-    float d_to_h_cost = ms;
-    record.device_to_host_copy += ms;
-    // printf("stream %d time stats, %f, %f, %f\n", i, h_to_d_cost, kernel_cost,
-    //        d_to_h_cost);
-  }
-
-  return pinned_output;
-}
-
-void gpu_cal_compare(float ***input, float ***cpu_output, uint64_t n) {
-  // {
-  //   ExecRecord record;
-  //   basic_gpu(input, n, record);
-  //   record.print();
-  // }
-
-  ExecRecord record;
-  float *gpu_output = gpu_calculation(input, n, record);
-  // record.print();
-
-  float *flat_cpu_output = (float *)malloc(n * n * n * sizeof(float));
-  flatten_cube(cpu_output, flat_cpu_output, n);
-  verify_result(flat_cpu_output, gpu_output, n);
-  double flat_cpu_result = sum_array(flat_cpu_output, n);
-  // printf("flat cpu sum:%lf\n", flat_cpu_result);
-
-  double gpu_result = sum_array(gpu_output, n);
-  printf("%lf %d\n", gpu_result, int(std::ceil(record.total_time)));
+  // a[i*n*n + j*n + k] = 0.8f * newVal;
+  a[i * n * n + j * n + k] =
+      0.8f * (((i > 0) ? b[(i - 1) * n * n + j * n + k] : 0) +
+              ((i < n - 1) ? b[(i + 1) * n * n + j * n + k] : 0) +
+              ((j > 0) ? b[i * n * n + (j - 1) * n + k] : 0) +
+              ((j < n - 1) ? b[i * n * n + (j + 1) * n + k] : 0) +
+              ((k > 0) ? b[i * n * n + j * n + (k - 1)] : 0) +
+              ((k < n - 1) ? b[i * n * n + j * n + (k + 1)] : 0));
 }
 
 int main(int argc, char *argv[]) {
-  std::string n_str;
-  uint64_t n;
+  if (argc != 2) {
+    printf("Error: wrong number of args\n");
+    exit(1);
+  }
 
-  if ((argc != 2)) {
-    std::cerr << "Error: wrong number of argument, specify one argument for "
-                 "the dimension of the cube.\n";
-    return -1;
-  } else {
-    n_str = argv[1];
+  int n = atoi(argv[1]);
+  size_t number_of_elements = ((size_t)n) * n * n;
+  size_t bytes = number_of_elements * sizeof(float);
+  int num_streams = std::max(std::min(n / 10, 50), 2) + 1;
+  int rows_per_stream = ceil(n / (num_streams - 1.0f));
+  int last_stream_rows = n - (num_streams - 2) * rows_per_stream;
+  // printf("Number of streams: %d\n", num_streams);
+  dim3 threadsPerBlock(1024);
+  dim3 blocksPerGrid((rows_per_stream * n * n + 1023) / 1024);
 
-    try {
-      n = std::stoull(n_str);
-    } catch (std::exception &e) {
-      std::cerr << "Error, failed to convert n to integer, error "
-                   "message:"
-                << e.what() << '\n';
-      return -1;
+  gpuErrchk(cudaDeviceReset());
+
+  float *h_a, *h_b;
+  cudaMallocHost(&h_a, bytes);
+  cudaMallocHost(&h_b, bytes);
+
+  // Initialize b_host
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < n; j++) {
+      for (int k = 0; k < n; k++) {
+        h_b[i * n * n + j * n + k] = (float)((i + j + k) % 10) * 1.1f;
+      }
     }
   }
 
-  // printf("specified n:%d\n", n);
+  cudaStream_t streams[num_streams];
+  for (int i = 1; i < num_streams; i++) {
+    cudaStreamCreate(&streams[i]);
+  }
 
-  float ***input, ***output;
-  cpu_malloc_cube(&input, n);
-  cpu_malloc_cube(&output, n);
-  gen_cube(input, n);
-  TimeCost cpu_tc;
-  cpu_calculation(input, output, n);
-  // printf("cpu cost:%lf\n", cpu_tc.get_elapsed());
-  double cpu_cal_sum = sum_cube(output, n);
-  printf("cpu result sum:%lf\n", cpu_cal_sum);
+  cudaEvent_t events[num_streams];
+  for (int i = 1; i < num_streams; i++) {
+    cudaEventCreate(&events[i]);
+  }
 
-  gpu_cal_compare(input, output, n);
+  //================= Timing Begins ========================
+  double start_time = getTimeStamp();
 
+  /*Device allocations are included in timing*/
+  float *d_a, *d_b;
+  cudaMalloc(&d_a, bytes);
+  cudaMalloc(&d_b, bytes);
+
+  cudaMemcpyAsync(d_b, h_b, (1 + rows_per_stream) * n * n * sizeof(float),
+                  cudaMemcpyHostToDevice, streams[1]);
+  cudaEventRecord(events[1], streams[1]);
+  jacobiKernel<<<blocksPerGrid, threadsPerBlock, 0, streams[1]>>>(
+      d_a, d_b, n, rows_per_stream, 0);
+  cudaMemcpyAsync(h_a, d_a, rows_per_stream * n * n * sizeof(float),
+                  cudaMemcpyDeviceToHost, streams[1]);
+  for (int i = 2; i < (num_streams - 1); i++) {
+    int offset = (i - 1) * rows_per_stream;
+    cudaMemcpyAsync(d_b + (offset + 1) * n * n, h_b + (offset + 1) * n * n,
+                    rows_per_stream * n * n * sizeof(float),
+                    cudaMemcpyHostToDevice, streams[i]);
+    cudaEventRecord(events[i], streams[i]);
+    cudaStreamWaitEvent(streams[i], events[i - 1], 0);
+    jacobiKernel<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(
+        d_a, d_b, n, i * rows_per_stream, offset);
+    cudaMemcpyAsync(h_a + offset * n * n, d_a + offset * n * n,
+                    rows_per_stream * n * n * sizeof(float),
+                    cudaMemcpyDeviceToHost, streams[i]);
+  }
+  if (last_stream_rows > 0) {
+    int offset = (num_streams - 2) * rows_per_stream;
+    cudaMemcpyAsync(d_b + (offset + 1) * n * n, h_b + (offset + 1) * n * n,
+                    (last_stream_rows - 1) * n * n * sizeof(float),
+                    cudaMemcpyHostToDevice, streams[num_streams - 1]);
+    cudaStreamWaitEvent(streams[num_streams - 1], events[num_streams - 2], 0);
+    jacobiKernel<<<blocksPerGrid, threadsPerBlock, 0,
+                   streams[num_streams - 1]>>>(d_a, d_b, n, n, offset);
+    cudaMemcpyAsync(h_a + offset * n * n, d_a + offset * n * n,
+                    last_stream_rows * n * n * sizeof(float),
+                    cudaMemcpyDeviceToHost, streams[num_streams - 1]);
+  }
+  cudaDeviceSynchronize();
+  double end_time = getTimeStamp();
+  //================= Timing Ends ========================    
+  int total_time_ms = (int)ceil((end_time - start_time) * 1000);
+  double sum = 0.0;
+  // compute a at host side and check the result
+  // float *a_host = (float *)malloc(bytes);
+  // for(int i = 0; i < n; i++) {
+  //     for(int j = 0; j < n; j++) {
+  //         for(int k = 0; k < n; k++) {
+  //             if (i > 0) a_host[i*n*n + j*n + k] += h_b[(i-1)*n*n + j*n + k];
+  //             if (i < n-1) a_host[i*n*n + j*n + k] += h_b[(i+1)*n*n + j*n +
+  //             k]; if (j > 0) a_host[i*n*n + j*n + k] += h_b[i*n*n + (j-1)*n +
+  //             k]; if (j < n-1) a_host[i*n*n + j*n + k] += h_b[i*n*n + (j+1)*n
+  //             + k]; if (k > 0) a_host[i*n*n + j*n + k] += h_b[i*n*n + j*n +
+  //             (k-1)]; if (k < n-1) a_host[i*n*n + j*n + k] += h_b[i*n*n + j*n
+  //             + (k+1)]; a_host[i*n*n + j*n + k] *= 0.8f; if (a_host[i*n*n +
+  //             j*n + k] != h_a[i*n*n + j*n + k]) {
+  //                 printf("Mismatch at %d %d %d: %f %f\n", i, j, k,
+  //                 a_host[i*n*n + j*n + k], h_a[i*n*n + j*n + k]);
+  //             }
+  //         }
+  //     }
+  // }
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < n; j++) {
+      for (int k = 0; k < n; k++) {
+        sum += h_a[i * n * n + j * n + k] * (((i + j + k) % 10) ? 1 : -1);
+      }
+    }
+  }
+
+  printf("%lf %d\n", sum, total_time_ms);
+
+  for (int i = 1; i < num_streams; i++) {
+    cudaStreamDestroy(streams[i]);
+  }
+  for (int i = 1; i < num_streams; i++) {
+    cudaEventDestroy(events[i]);
+  }
+  cudaFree(d_a);
+  cudaFree(d_b);
+  cudaFreeHost(h_a);
+  cudaFreeHost(h_b);
+  gpuErrchk(cudaDeviceReset());
   return 0;
 }
