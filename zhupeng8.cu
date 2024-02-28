@@ -417,7 +417,6 @@ float *gpu_calculation(float ***input, uint64_t n, ExecRecord &record) {
     }
   }
 
-  TimeCost debug_stream_sync_tc;
   for (int i = 1; i <= n_stream; ++i) {
     cudaStreamSynchronize(streams[i]);
     // printf("synced stream %d, tc:%lf\n", i,
