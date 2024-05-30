@@ -1,2 +1,2 @@
 # cube
-assignment 2 for ece1782
+Parallel calculation for cube using cuda
